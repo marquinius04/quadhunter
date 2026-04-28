@@ -1,11 +1,10 @@
-import time
 from playwright.sync_api import sync_playwright
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import json
 import re
 
-# 1. DATOS DE ENTRENAMIENTO
+# 1. TRAINING DATA
 QUAD_EXAMPLES = [
     # YAMAHA
     "yamaha raptor 700", "yamaha raptor 660", "yamaha raptor 350", "yamaha raptor 250", "yamaha raptor 125", "yamaha raptor 90", "yamaha raptor 50",
@@ -38,7 +37,7 @@ QUAD_EXAMPLES = [
     "can am outlander 1000", "can am outlander 850", "can am outlander 650", "can am outlander 570", "can am outlander 450",
     "can am ds 450", "can am ds 250", "can am ds 90", "can am ds 70",
     
-    # OTRAS MARCAS
+    # OTHER BRANDS
     "kymco mxu 700", "kymco mxu 500", "kymco mxu 300", "kymco mxu 250", "kymco mxu 150", "kymco maxxer 450", "kymco maxxer 300", "kymco maxxer 250",
     "cfmoto cforce 1000", "cfmoto cforce 850", "cfmoto cforce 800", "cfmoto cforce 625", "cfmoto cforce 520", "cfmoto cforce 450", "cfmoto cforce 110",
     "arctic cat alterra 700", "arctic cat alterra 500", "arctic cat alterra 300", "arctic cat xc 450", "arctic cat mudpro",
@@ -47,8 +46,8 @@ QUAD_EXAMPLES = [
     "segway snarler at6", "segway snarler at5",
     "gas gas hp 450", "gas gas wild 450", "ktm xc 450", "ktm xc 525",
     
-    # GENÉRICOS
-    "quad agricola", "quad 4x4", "quad 2x4", "atv 4x4", "atv agricola", "atv utilitario", "quad deportivo", "quad infantil", "miniquad"
+    # GENERIC
+    "agricultural quad", "4x4 quad", "2x4 quad", "4x4 atv", "agricultural atv", "utility atv", "sport quad", "kids quad", "miniquad"
 ]
 
 MOTO_EXAMPLES = [
@@ -101,7 +100,7 @@ MOTO_EXAMPLES = [
     "triumph tiger", "triumph scrambler 1200",
     "triumph bonneville", "triumph thruxton", "triumph bobber", "triumph rocket 3",
     
-    # OTRAS MARCAS
+    # OTHER BRANDS
     "aprilia rsv4", "aprilia rs 660", "aprilia tuono", "aprilia sr", "aprilia rx",
     "harley davidson sportster", "harley davidson softail", "harley davidson touring", "harley davidson pan america", "harley davidson street glide", "harley davidson iron 883",
     "indian scout", "indian ftr", "indian chief",
@@ -111,103 +110,120 @@ MOTO_EXAMPLES = [
     "beta rr 480", "beta rr 300", "beta rr 250",
     "sherco se 300", "rieju mrt", "derbi senda",
     
-    # GENÉRICOS
-    "moto de cross", "moto enduro", "moto trail", "moto trial", "pit bike",
-    "scooter 300", "scooter 125", "scooter 50", "maxiscooter", "ciclomotor", "motocicleta",
-    "moto custom", "moto cafe racer", "moto naked", "moto touring", "motocross"
+    # GENERIC
+    "motocross bike", "enduro bike", "trail bike", "trial bike", "pit bike",
+    "300 scooter", "125 scooter", "50 scooter", "maxiscooter", "moped", "motorcycle",
+    "custom bike", "cafe racer", "naked bike", "touring bike"
 ]
 
-# 2. INICIALIZACIÓN DE LA HERRAMIENTA DE ANÁLISIS DE TEXTO
 vectorizer = TfidfVectorizer()
 vectorizer.fit(QUAD_EXAMPLES + MOTO_EXAMPLES)
 
+def check_quad_or_moto(title, page):
+    """
+    Calculates text similarity to distinguish between Quads and Motorbikes.
 
-class Quad():
-    def __init__(self, url, img_url, title, price):
-        self.url = url
-        self.img_url = img_url
-        self.title = title
-        self.price = price
+    :param title: The title of the advertisement
+    :type title: str
+    :param page: The Playwright page object used to fetch image attributes
+    :type page: playwright.sync_api.Page
+    :return: Image URL if it is a Quad, otherwise False
+    :rtype: str | bool
+    """
+    text_vec = vectorizer.transform([title])
+    quad_sim = cosine_similarity(text_vec, vectorizer.transform(QUAD_EXAMPLES)).max()
+    moto_sim = cosine_similarity(text_vec, vectorizer.transform(MOTO_EXAMPLES)).max()
 
-    def __str__(self):
-        return f"Título: {self.title} | Precio: {self.price} | URL: {self.url}"
+    # Threshold-based check to prioritize Quads over Motorbikes
+    if quad_sim - moto_sim > 0.05:
+        # Attempts to extract the source URL from the first tabpanel found
+        try:
+            return page.get_by_role("tabpanel").first.get_attribute("src")
+        except:
+            return "https://via.placeholder.com/800x600?text=No+Image"
+    return False
 
-    @classmethod
-    def check_quad_or_moto(self, title, page):
-        text_vec = vectorizer.transform([title])
-        quad_sim = cosine_similarity(text_vec, vectorizer.transform(QUAD_EXAMPLES)).max()
-        moto_sim = cosine_similarity(text_vec, vectorizer.transform(MOTO_EXAMPLES)).max()
+def clean_resources(route):
+    """
+    Intercepts network requests to block unnecessary assets and speed up scraping.
 
-        if quad_sim - moto_sim > 0.05:
-            img_url = page.get_by_role("tabpanel").first.get_attribute("src")
-            return img_url
-
-        elif moto_sim - quad_sim > 0.15:
-            return False
-        else:
-            return False
-
-def clean_shi(route):
-    resource_type = route.request.resource_type
-    if resource_type in ["image", "stylesheet", "font", "media"]:
+    :param route: The Playwright route object to be evaluated
+    :type route: playwright.sync_api.Route
+    """
+    if route.request.resource_type in ["image", "stylesheet", "font", "media"]:
         route.abort()
     else:
         route.continue_()
 
-
-
 def run_scraper():
+    """
+    Launches the web scraper to find new quads on Wallapop and yields results.
+
+    :yield: Server-Sent Events formatted JSON string
+    :rtype: generator
+    """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, channel="chrome")
         context = browser.new_context()
+        
+        # Main Search Page
         page = context.new_page()
-
-        page.route("**/*", clean_shi)
-        # We go to the page with the filters that we want to include in the search
+        page.route("**/*", clean_resources)
         page.goto("https://es.wallapop.com/search?category_id=14000&keywords=quad&order_by=newest")
 
-        # We reject the cookies popup
-        page.get_by_role("button").get_by_text("Reject all").click()
+        try:
+            page.get_by_role("button").get_by_text("Reject all").click()
+        except:
+            pass
 
         ads = page.locator(".item-card_ItemCard--vertical__CNrfk").all()
 
-        new_page = context.new_page()
-        new_page.route("**/*", clean_shi)
-        urls_visitadas = set()
+        # Detail Page Configuration
+        detail_page = context.new_page()
+        # Abort only non-essential styles/fonts to allow image loading logic
+        detail_page.route("**/*", lambda route: route.abort() 
+                          if route.request.resource_type in ["stylesheet", "font"] 
+                          else route.continue_())
+        
+        visited_urls = set()
 
         for ad in ads:
-            if not ad.get_attribute("href"):
-                continue
-
+            href = ad.get_attribute("href")
             title = ad.get_attribute("title")
-            if re.search(r"(infantil)", title.lower()):
+            
+            if not href or not title:
                 continue
 
-
-            url = "https://es.wallapop.com/" + ad.get_attribute("href", timeout=1000)
-
-            if url in urls_visitadas:
+            # Filtering out toy/kids quads via regex
+            if re.search(r"(infantil|niño|juguete)", title.lower()):
                 continue
-            urls_visitadas.add(url)
+
+            url = "https://es.wallapop.com/" + href
+            if url in visited_urls:
+                continue
+            visited_urls.add(url)
 
             price = ad.locator(".item-card_ItemCard__price__pVpdc").inner_text()
 
-            new_page.goto(url)
-            
-            if img_url:=Quad.check_quad_or_moto(title, new_page):
+            # Verify category and extract image from detail page
+            detail_page.goto(url)
+            img_url = check_quad_or_moto(title, detail_page)
+
+            if img_url:
                 data = {
-                    "title": title,
+                    "title": title.title(),
                     "price": price,
                     "url": url,
                     "img_url": img_url
                 }
-                prepared_data = json.dumps(data)
-                yield f"data: {prepared_data}\n\n"
+                yield f"data: {json.dumps(data)}\n\n"
 
-        new_page.close()
-
+        detail_page.close()
         browser.close()
 
-
 if __name__ == "__main__":
-    run_scraper()
+    """
+    Main entry point for manual execution.
+    """
+    for result in run_scraper():
+        print(result)
