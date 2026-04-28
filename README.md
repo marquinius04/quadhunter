@@ -1,6 +1,10 @@
 # Quadhunter 🏍️
 Quadhunter is a real-time web scraping and visualization tool designed to find Quad and ATV listings. It leverages headless browser automation to extract the newest ads in Wallapop from the motorcycles category and utilizes Machine Learning (TF-IDF similarity) to accurately distinguish between quads and motorcycles, delivering results through a live-streaming web interface.
 
+
+https://github.com/user-attachments/assets/f91748ef-d617-4dda-b95a-21f706a66af8
+
+
 # Features 🚀
 - Real-time Scraping: Powered by Playwright, the scraper navigates through listings and extracts data on the fly.
 
